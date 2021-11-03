@@ -22,7 +22,7 @@
 # Beginning of multi stage Dockerfile
 ################################################################################
 
-{% set tarball = 'elasticsearch-oss-%s-linux-x86_64.tar.gz' % elastic_version -%}
+{% set tarball = 'elasticsearch-oss-%s-linux-aarch64.tar.gz' % elastic_version -%}
 
 {% if artifacts_dir %}
 {% set artifact_repo_url = 'file:///%s' % artifacts_dir -%}
@@ -56,7 +56,8 @@ COPY --chown=1000:0 {{ '%s/' % artifacts_dir }} {{ artifacts_dir }}
 {% endif %}
 
 RUN rm -rf /tmp/plugins && mkdir /tmp/plugins
-ADD plugins /tmp/plugins/
+# Plugins are added explicitly later
+# ADD plugins /tmp/plugins/
 
 ################################################################################
 
@@ -80,36 +81,43 @@ RUN java -version
 
 # Compile the C-library for kNN
 USER 1000
-RUN set -ex; \
 
-   export KNN_VERSION=`git ls-remote --tags "https://github.com/opendistro-for-elasticsearch/k-NN" v* | grep $(echo {{version_tag}} | sed -E "s/.[0-9]+$//g") | grep -oh "v[0-9.]*" | sort | tail -n 1` \
- \
-    && git ls-remote --tags https://github.com/opendistro-for-elasticsearch/k-NN.git v* \
- \
-    && echo KNN_VERSION $KNN_VERSION \
- \
-    && git clone --recursive --branch $KNN_VERSION https://github.com/opendistro-for-elasticsearch/k-NN.git /usr/share/elasticsearch/k-NN \
- \
-    && cd /usr/share/elasticsearch/k-NN/jni \
- \
-    && sed -i 's/-march=native/-march=x86-64/g' external/nmslib/similarity_search/CMakeLists.txt \
-\
-    && cmake . \
- \
-    && make \
- \
-    && mkdir /tmp/jni/ && cp release/*.so /tmp/jni/ && ls -ltr /tmp/jni/ \
- \
-    && rm -rf /usr/share/elasticsearch/k-NN
+# Don't bother building kNN for m1 mac
+# RUN set -ex; \
+
+#    export KNN_VERSION=`git ls-remote --tags "https://github.com/opendistro-for-elasticsearch/k-NN" v* | grep $(echo {{version_tag}} | sed -E "s/.[0-9]+$//g") | grep -oh "v[0-9.]*" | sort | tail -n 1` \
+#  \
+#     && git ls-remote --tags https://github.com/opendistro-for-elasticsearch/k-NN.git v* \
+#  \
+#     && echo KNN_VERSION $KNN_VERSION \
+#  \
+#     && git clone --recursive --branch $KNN_VERSION https://github.com/opendistro-for-elasticsearch/k-NN.git /usr/share/elasticsearch/k-NN \
+#  \
+#     && cd /usr/share/elasticsearch/k-NN/jni \
+#  \
+#     && sed -i 's/-march=native/-march=x86-64/g' external/nmslib/similarity_search/CMakeLists.txt \
+# \
+#     && cmake . \
+#  \
+#     && make \
+#  \
+#     && mkdir /tmp/jni/ && cp release/*.so /tmp/jni/ && ls -ltr /tmp/jni/ \
+#  \
+#     && rm -rf /usr/share/elasticsearch/k-NN
 
 # Bust cache for wgets
 ENV BUST_CACHE {{ bust_cache }}
 
 # Install the required modules
 #RUN for plugin_path in {{ plugin_url_paths }}; do \
-RUN for plugin_path in `cat /tmp/plugins/plugins.list`; do \
-      elasticsearch-plugin install --batch file:/tmp/plugins/$plugin_path; \
-    done
+
+# Explicit plugin installation
+RUN elasticsearch-plugin install -b com.amazon.opendistroforelasticsearch:opendistro_security:1.10.1.0
+RUN elasticsearch-plugin install -b https://github.com/opendistro-for-elasticsearch/job-scheduler/releases/download/v1.10.1.1/job-scheduler-artifacts.zip
+RUN elasticsearch-plugin install -b https://github.com/opendistro-for-elasticsearch/index-management/releases/download/v1.10.1.1/index-management-artifacts.zip
+# RUN for plugin_path in `cat /tmp/plugins/plugins.list`; do \
+#       elasticsearch-plugin install file:/tmp/plugins/$plugin_path; \
+#     done
 
 # Pull performance analyzer agent(RCA) from the plugin directory out into ESHOME and make the agent executable.
 RUN if [ -d plugins/opendistro_performance_analyzer/performance-analyzer-rca ]; then \
@@ -128,7 +136,7 @@ USER 0
 RUN chown -R elasticsearch:0 . && \
     chmod -R g=u /usr/share/elasticsearch
 
-RUN pfa=`ls /tmp/plugins/|grep opendistro_performance_analyzer|wc -l` && \ 
+RUN pfa=`ls /tmp/plugins/|grep opendistro_performance_analyzer|wc -l` && \
     if [ $pfa -gt 0 ]; then chmod 755 /usr/share/elasticsearch/plugins/opendistro_performance_analyzer/pa_bin/performance-analyzer-agent; \
     else echo "Performace Analyzer plugin is not yet installed"; fi
 
@@ -150,6 +158,7 @@ RUN \
   yum install -y \
                   iproute \
                   python-setuptools \
+                  python-pip \
                   hostname \
                   inotify-tools \
                   yum-utils \
@@ -157,7 +166,7 @@ RUN \
                   jq \
                   rsync && \
   yum clean all && \
-  easy_install supervisor
+  pip install supervisor
 
 RUN yum update -y && \
     yum install -y nc unzip wget which && \
@@ -187,7 +196,8 @@ RUN mkdir -p /usr/share/supervisor/performance_analyzer/ && \
 
 WORKDIR /usr/share/elasticsearch
 COPY --from=prep_es_files --chown=1000:0 /usr/share/elasticsearch /usr/share/elasticsearch
-COPY --from=prep_es_files /tmp/jni/libKNNIndex*.so /usr/lib
+# Not building for m1, so don't copy
+#COPY --from=prep_es_files /tmp/jni/libKNNIndex*.so /usr/lib
 
 ENV PATH /usr/share/elasticsearch/bin:$PATH
 
